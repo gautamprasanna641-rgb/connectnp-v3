@@ -1,0 +1,245 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'gautamprasanna641@gmail.com';
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.handle is string && data.handle.size() >= 1 && data.handle.size() <= 50 &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 2000)) &&
+             (!('isVerified' in data) || (data.isVerified is bool)) &&
+             (!('walletBalance' in data) || (data.walletBalance is int && data.walletBalance >= 0)) &&
+             (!('walletMpin' in data) || (data.walletMpin is string && data.walletMpin.size() <= 100)) &&
+             (!('isBiometricEnabled' in data) || (data.isBiometricEnabled is bool)) &&
+             (!('esewaId' in data) || (data.esewaId is string && data.esewaId.size() <= 100)) &&
+             (!('khaltiNumber' in data) || (data.khaltiNumber is string && data.khaltiNumber.size() <= 100)) &&
+             (!('bankAccountNumber' in data) || (data.bankAccountNumber is string && data.bankAccountNumber.size() <= 100)) &&
+             (!('bankName' in data) || (data.bankName is string && data.bankName.size() <= 100)) &&
+             (!('bankAccountHolder' in data) || (data.bankAccountHolder is string && data.bankAccountHolder.size() <= 100)) &&
+             (!('bankBranch' in data) || (data.bankBranch is string && data.bankBranch.size() <= 100)) &&
+             (!('linkedPaymentMethods' in data) || (data.linkedPaymentMethods is list)) &&
+             (!('blockedUsers' in data) || (data.blockedUsers is list)) &&
+             (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 500)) &&
+             (!('followersCount' in data) || (data.followersCount is int && data.followersCount >= 0)) &&
+             (!('followingCount' in data) || (data.followingCount is int && data.followingCount >= 0)) &&
+             (!('followers' in data) || (data.followers is list)) &&
+             (!('following' in data) || (data.following is list)) &&
+             (!('postsCount' in data) || (data.postsCount is int && data.postsCount >= 0)) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidPost(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100 &&
+             data.authorHandle is string && data.authorHandle.size() >= 1 && data.authorHandle.size() <= 50 &&
+             data.content is string && data.content.size() >= 1 && data.content.size() <= 5000 &&
+             (!('id' in data) || (data.id is string && data.id.size() <= 128)) &&
+             (!('location' in data) || (data.location is string && data.location.size() <= 100)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 2000)) &&
+             (!('likesCount' in data) || (data.likesCount is int && data.likesCount >= 0)) &&
+             (!('commentsCount' in data) || (data.commentsCount is int && data.commentsCount >= 0)) &&
+             (!('sharesCount' in data) || (data.sharesCount is int && data.sharesCount >= 0)) &&
+             (!('isPagePost' in data) || (data.isPagePost is bool)) &&
+             (!('pageId' in data) || (data.pageId is string && data.pageId.size() <= 128)) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidMarketItem(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.sellerName is string && data.sellerName.size() >= 1 && data.sellerName.size() <= 100 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.priceNpr is int && data.priceNpr >= 0 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             data.location is string && data.location.size() >= 1 && data.location.size() <= 100 &&
+             (!('id' in data) || (data.id is string && data.id.size() <= 128)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time));
+    }
+
+    function isValidWalletTransaction(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.amount is int && data.amount >= 0 &&
+             data.type is string && (data.type == 'credit' || data.type == 'debit') &&
+             (!('id' in data) || (data.id is string && data.id.size() <= 128)) &&
+             (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time));
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'name', 'handle', 'createdAt']) &&
+                       incoming().keys().hasOnly(['userId', 'name', 'handle', 'bio', 'photoUrl', 'isVerified', 'walletBalance', 'walletMpin', 'isBiometricEnabled', 'esewaId', 'khaltiNumber', 'bankAccountNumber', 'bankName', 'bankAccountHolder', 'bankBranch', 'linkedPaymentMethods', 'blockedUsers', 'fcmToken', 'followersCount', 'followingCount', 'followers', 'following', 'postsCount', 'createdAt', 'updatedAt']) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidUserProfile(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       ((request.auth.uid == userId &&
+                        incoming().userId == existing().userId &&
+                        incoming().createdAt == existing().createdAt &&
+                        isValidUserProfile(incoming()) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'handle', 'bio', 'photoUrl', 'isVerified', 'walletBalance', 'walletMpin', 'isBiometricEnabled', 'esewaId', 'khaltiNumber', 'bankAccountNumber', 'bankName', 'bankAccountHolder', 'bankBranch', 'linkedPaymentMethods', 'blockedUsers', 'fcmToken', 'followersCount', 'followingCount', 'followers', 'following', 'postsCount', 'updatedAt'])) ||
+                       (isSignedIn() && incoming().userId == existing().userId && incoming().diff(existing()).affectedKeys().hasOnly(['followers', 'followersCount', 'updatedAt'])) ||
+                       (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['isVerified', 'updatedAt'])));
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /transactions/{transactionId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(transactionId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(transactionId) &&
+                         request.auth.uid == userId &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'title', 'amount', 'type', 'createdAt']) &&
+                         incoming().keys().hasOnly(['id', 'userId', 'title', 'amount', 'type', 'createdAt']) &&
+                         incoming().createdAt is timestamp &&
+                         incoming().createdAt <= request.time &&
+                         isValidWalletTransaction(incoming());
+        allow update, delete: if false;
+      }
+
+      match /payment_methods/{methodId} {
+        allow get, list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+        allow create, update, delete: if isSignedIn() && isValidId(userId) && isValidId(methodId) && request.auth.uid == userId;
+      }
+    }
+
+    match /posts/{postId} {
+      allow get: if isSignedIn() && isValidId(postId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       isValidId(postId) &&
+                       incoming().userId == request.auth.uid &&
+                       (!('isPagePost' in incoming()) || incoming().isPagePost == false || isAdmin()) &&
+                       incoming().keys().hasAll(['userId', 'authorName', 'authorHandle', 'content', 'createdAt']) &&
+                       incoming().keys().hasOnly(['id', 'userId', 'authorName', 'authorHandle', 'content', 'location', 'mediaUrl', 'likesCount', 'commentsCount', 'sharesCount', 'isPagePost', 'pageId', 'createdAt', 'updatedAt']) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidPost(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(postId) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidPost(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['content', 'location', 'mediaUrl', 'likesCount', 'commentsCount', 'sharesCount', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(postId) && (existing().userId == request.auth.uid || isAdmin());
+
+      match /comments/{commentId} {
+        allow get, list: if isSignedIn() && isValidId(postId) && isValidId(commentId);
+        allow create: if isSignedIn() &&
+                         isValidId(postId) &&
+                         isValidId(commentId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'authorName', 'text', 'createdAt']) &&
+                         incoming().keys().hasOnly(['id', 'postId', 'userId', 'authorName', 'authorHandle', 'authorAvatarUrl', 'text', 'createdAt']) &&
+                         incoming().createdAt is timestamp &&
+                         incoming().createdAt <= request.time;
+        allow update, delete: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      }
+    }
+
+    match /pages/{pageId} {
+      allow get, list: if isSignedIn() && isValidId(pageId);
+      allow create, delete: if isAdmin() && isValidId(pageId);
+      allow update: if isSignedIn() && isValidId(pageId) && (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['followers', 'followersCount']));
+    }
+
+    match /market_items/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(itemId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'sellerName', 'title', 'priceNpr', 'category', 'location', 'createdAt']) &&
+                       incoming().keys().hasOnly(['id', 'userId', 'sellerName', 'title', 'priceNpr', 'category', 'location', 'description', 'createdAt']) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       isValidMarketItem(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(itemId) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidMarketItem(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['title', 'priceNpr', 'category', 'location', 'description']);
+      allow delete: if isSignedIn() && isValidId(itemId) && existing().userId == request.auth.uid;
+    }
+
+    match /reports/{reportId} {
+      allow get, list: if false;
+      allow create: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       incoming().reportedBy == request.auth.uid &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time;
+      allow update, delete: if false;
+    }
+
+    match /admin_revenue/{docId} {
+      allow get: if isSignedIn() && isValidId(docId);
+      allow list: if isAdmin();
+      allow create, update: if isSignedIn() && isValidId(docId);
+
+      match /fees/{feeId} {
+        allow get, list: if isSignedIn() && isValidId(feeId);
+        allow create: if isSignedIn() && isValidId(feeId);
+      }
+    }
+  
+    function isValidReel(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             (!('caption' in data) || (data.caption is string && data.caption.size() <= 1000)) &&
+             (!('videoUrl' in data) || (data.videoUrl is string && data.videoUrl.size() <= 2000)) &&
+             (!('likesCount' in data) || (data.likesCount is int && data.likesCount >= 0));
+    }
+
+    match /reels/{reelId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reelId) && incoming().userId == request.auth.uid && isValidReel(incoming());
+      allow update: if isSignedIn() && isValidId(reelId) && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(reelId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    match /videos/{videoId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(videoId) && incoming().userId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(videoId) && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(videoId) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+  }
+}

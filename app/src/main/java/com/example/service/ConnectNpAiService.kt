@@ -1,0 +1,381 @@
+package com.example.service
+
+import android.util.Log
+import com.example.BuildConfig
+import com.example.model.ChatMessage
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.content
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+object ConnectNpAiService {
+
+    private const val TAG = "ConnectNpAiService"
+
+    // Gemini model: gemini-2.5-flash
+    const val MODEL_NAME = "gemini-2.5-flash"
+    private const val GEMINI_ENDPOINT =
+        "https://generativelanguage.googleapis.com/v1beta/models/$MODEL_NAME:generateContent"
+
+    fun buildSystemPrompt(isNepali: Boolean): String {
+        return if (isNepali) {
+            "You are ConnectNP AI, the friendly, intelligent bilingual assistant for ConnectNP (Nepal's premier social and fintech super-app). " +
+            "The user's currently selected app language is NEPALI (नेपाली). " +
+            "CRITICAL SYSTEM INSTRUCTION: You MUST respond completely in natural, polite Nepali language (नेपाली भाषामा, देवनागरी लिपि). " +
+            "Use respectful Nepali tone and greetings (e.g., 'नमस्ते!', 'हजुर'). " +
+            "Maintain complete conversational memory across previous turns. " +
+            "Provide culturally authentic, helpful, and concise advice regarding travel in Nepal (Himalayan treks like Annapurna, Everest, Langtang, seasons, weather), " +
+            "Nepali cuisine & culture (momo, dal bhat, Newari dishes), ConnectNP community features, and ConnectNP Pay wallet and escrow services."
+        } else {
+            "You are ConnectNP AI, the friendly, intelligent bilingual assistant for ConnectNP (Nepal's premier social and fintech super-app). " +
+            "The user's currently selected app language is ENGLISH. " +
+            "CRITICAL SYSTEM INSTRUCTION: You MUST respond in natural, friendly, and concise English. " +
+            "Maintain complete conversational memory across previous turns. " +
+            "Provide culturally authentic, helpful, and concise advice regarding travel in Nepal (Himalayan treks like Annapurna, Everest, Langtang, permits, seasons, weather), " +
+            "Nepali cuisine & culture (momo, dal bhat, Newari dishes), ConnectNP community features, and ConnectNP Pay wallet and escrow services."
+        }
+    }
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Resolves the Gemini API key dynamically from Secrets (MANUAL_GEMINI_API_KEY or GEMINI_API_KEY).
+     * Does not contain hardcoded keys.
+     */
+    fun getResolvedApiKey(): String {
+        // 1. Check MANUAL_GEMINI_API_KEY from AI Studio Secrets panel via BuildConfig
+        val manualKey = try {
+            val field = BuildConfig::class.java.getField("MANUAL_GEMINI_API_KEY")
+            (field.get(null) as? String)?.trim()
+        } catch (_: Throwable) {
+            null
+        }
+        if (!manualKey.isNullOrBlank() && manualKey != "MY_GEMINI_API_KEY" && manualKey != "PASTE_YOUR_KEY_HERE") {
+            return manualKey
+        }
+
+        // 2. Check GEMINI_API_KEY from AI Studio Secrets panel via BuildConfig
+        val geminiKey = try {
+            val field = BuildConfig::class.java.getField("GEMINI_API_KEY")
+            (field.get(null) as? String)?.trim()
+        } catch (_: Throwable) {
+            null
+        }
+        if (!geminiKey.isNullOrBlank() && geminiKey != "MY_GEMINI_API_KEY" && geminiKey != "PASTE_YOUR_KEY_HERE") {
+            return geminiKey
+        }
+
+        // 3. Fallback to runtime environment variables injected by Secrets
+        val envManual = try { System.getenv("MANUAL_GEMINI_API_KEY")?.trim() } catch (_: Throwable) { null }
+        if (!envManual.isNullOrBlank() && envManual != "MY_GEMINI_API_KEY" && envManual != "PASTE_YOUR_KEY_HERE") {
+            return envManual
+        }
+
+        val envGemini = try { System.getenv("GEMINI_API_KEY")?.trim() } catch (_: Throwable) { null }
+        if (!envGemini.isNullOrBlank() && envGemini != "MY_GEMINI_API_KEY" && envGemini != "PASTE_YOUR_KEY_HERE") {
+            return envGemini
+        }
+
+        return ""
+    }
+
+
+    /**
+     * Generates a smart conversational AI response by calling the Google Gemini API directly using the Secrets API key.
+     * Passes the user's selected language as a system instruction (Requirement #1) and retains conversational history.
+     */
+    suspend fun getAiResponseWithHistory(
+        history: List<ChatMessage>,
+        newPrompt: String,
+        isNepali: Boolean = false
+    ): String = withContext(Dispatchers.IO) {
+        val apiKey = getResolvedApiKey()
+        val systemInstructionText = buildSystemPrompt(isNepali)
+
+        if (apiKey.isBlank()) {
+            Log.w(TAG, "No Gemini API key found in Secrets (MANUAL_GEMINI_API_KEY or GEMINI_API_KEY)")
+            return@withContext if (isNepali)
+                "⚠️ गुगल जेमिनी (Gemini) API की आवश्यक छ:\n\nकृपया AI Studio को Secrets खण्डमा 'MANUAL_GEMINI_API_KEY' वा 'GEMINI_API_KEY' प्रविष्ट गर्नुहोस्।"
+            else
+                "⚠️ Google Gemini API Key Required:\n\nPlease ensure your Gemini API key is configured in the AI Studio Secrets panel under 'MANUAL_GEMINI_API_KEY' or 'GEMINI_API_KEY'.\n\nYou can get a free key at: https://aistudio.google.com/app/apikey"
+        }
+
+        // 1. Primary: Official Google Generative AI Client SDK
+        try {
+            val generativeModel = GenerativeModel(
+                modelName = MODEL_NAME,
+                apiKey = apiKey,
+                systemInstruction = content { text(systemInstructionText) }
+            )
+
+            val relevantHistory = history.takeLast(20).filter { it.text.isNotBlank() }
+            val formattedHistory = relevantHistory.map { msg ->
+                content(role = if (msg.isFromMe) "user" else "model") {
+                    text(msg.text)
+                }
+            }
+
+            val responseText = withTimeout(40_000L) {
+                val chat = generativeModel.startChat(history = formattedHistory)
+                val response = chat.sendMessage(newPrompt)
+                response.text
+            }
+
+            if (!responseText.isNullOrBlank()) {
+                Log.d(TAG, "Successfully received response from Google Generative AI SDK ($MODEL_NAME, isNepali=$isNepali)")
+                return@withContext responseText.trim()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Google Generative AI SDK call failed, trying direct REST: ${e.message}")
+        }
+
+        // 2. Secondary: Direct Google Gemini REST API with multi-turn history and system instruction
+        try {
+            val restResponse = callGeminiWithHistory(apiKey, history, newPrompt, systemInstructionText)
+            if (!restResponse.isNullOrBlank()) {
+                Log.d(TAG, "Successfully received response from direct Gemini REST API ($MODEL_NAME, isNepali=$isNepali)")
+                return@withContext restResponse.trim()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Direct Gemini REST API failed: ${e.message}", e)
+            return@withContext if (isNepali)
+                "गुगल जेमिनी API मा जडान गर्दा त्रुटि भयो: ${e.message ?: "अनुरोध असफल"}"
+            else
+                "Error connecting to Google Gemini API: ${e.message ?: "Request failed"}. Please check your API key and network connection."
+        }
+
+        // 3. Fallback
+        generateContextAwareFallback(history, newPrompt)
+    }
+
+    /**
+     * Direct HTTP call to the Google Gemini generateContent REST endpoint with multi-turn chat history.
+     */
+    fun callGeminiWithHistory(
+        apiKey: String,
+        history: List<ChatMessage>,
+        newPrompt: String,
+        systemPrompt: String = buildSystemPrompt(false)
+    ): String? {
+        val jsonPayload = JSONObject().apply {
+            put(
+                "systemInstruction",
+                JSONObject().apply {
+                    put(
+                        "parts",
+                        JSONArray().put(
+                            JSONObject().put("text", systemPrompt)
+                        )
+                    )
+                }
+            )
+
+            val contentsArray = JSONArray()
+
+            // Include up to 20 previous conversational turns
+            val relevantHistory = history.takeLast(20).filter { it.text.isNotBlank() }
+            relevantHistory.forEach { msg ->
+                val role = if (msg.isFromMe) "user" else "model"
+                val contentObj = JSONObject().apply {
+                    put("role", role)
+                    put("parts", JSONArray().put(JSONObject().put("text", msg.text)))
+                }
+                contentsArray.put(contentObj)
+            }
+
+            // Append the latest user prompt if not already the last item in history
+            if (relevantHistory.none { it.text == newPrompt && it.isFromMe }) {
+                contentsArray.put(
+                    JSONObject().apply {
+                        put("role", "user")
+                        put("parts", JSONArray().put(JSONObject().put("text", newPrompt)))
+                    }
+                )
+            }
+
+            put("contents", contentsArray)
+
+            put(
+                "generationConfig",
+                JSONObject().apply {
+                    put("temperature", 0.7)
+                    put("maxOutputTokens", 1200)
+                }
+            )
+        }
+
+        val url = "$GEMINI_ENDPOINT?key=$apiKey"
+        val requestBody = jsonPayload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .build()
+
+        val response = httpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+            val errBody = response.body?.string()
+            Log.w(TAG, "Gemini HTTP error ${response.code}: $errBody")
+            val errorMsg = try {
+                JSONObject(errBody ?: "").optJSONObject("error")?.optString("message") ?: "HTTP ${response.code}"
+            } catch (_: Exception) {
+                "HTTP ${response.code}"
+            }
+            throw IllegalStateException("Gemini API error ($errorMsg)")
+        }
+
+        val respString = response.body?.string() ?: return null
+        val root = JSONObject(respString)
+        val candidates = root.optJSONArray("candidates") ?: return null
+        val firstCandidate = candidates.optJSONObject(0) ?: return null
+        val content = firstCandidate.optJSONObject("content") ?: return null
+        val parts = content.optJSONArray("parts") ?: return null
+        val text = parts.optJSONObject(0)?.optString("text")
+
+        return text?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Fallback contextual multi-turn generator.
+     * Analyzes previous conversation turns so the assistant remembers context.
+     */
+    fun generateContextAwareFallback(
+        history: List<ChatMessage>,
+        newPrompt: String
+    ): String {
+        val lowerPrompt = newPrompt.lowercase().trim()
+        val allUserTexts = history.filter { it.isFromMe }.map { it.text.lowercase() } + lowerPrompt
+        val combinedHistoryText = allUserTexts.joinToString(" ")
+
+        val isTrekDiscussed = combinedHistoryText.contains("trek") ||
+                combinedHistoryText.contains("himalaya") ||
+                combinedHistoryText.contains("everest") ||
+                combinedHistoryText.contains("annapurna") ||
+                combinedHistoryText.contains("langtang")
+
+        val isFoodDiscussed = combinedHistoryText.contains("momo") ||
+                combinedHistoryText.contains("food") ||
+                combinedHistoryText.contains("restaurant") ||
+                combinedHistoryText.contains("eat") ||
+                combinedHistoryText.contains("khana") ||
+                combinedHistoryText.contains("bhoj")
+
+        val isPayDiscussed = combinedHistoryText.contains("pay") ||
+                combinedHistoryText.contains("wallet") ||
+                combinedHistoryText.contains("esewa") ||
+                combinedHistoryText.contains("khalti") ||
+                combinedHistoryText.contains("money") ||
+                combinedHistoryText.contains("rupee") ||
+                combinedHistoryText.contains("transfer")
+
+        val isNepaliGreeting = lowerPrompt.contains("नमस्ते") ||
+                lowerPrompt.contains("namaste") ||
+                lowerPrompt.contains("hello") ||
+                lowerPrompt.contains("hi")
+
+        val isNepaliLangPrompt = lowerPrompt.contains("nepali") ||
+                lowerPrompt.contains("नेपाली") ||
+                lowerPrompt.contains("भाषा")
+
+        return when {
+            // Contextual cost inquiries
+            lowerPrompt.contains("cost") || lowerPrompt.contains("price") || lowerPrompt.contains("how much") || lowerPrompt.contains("expensive") || lowerPrompt.contains("कति") -> {
+                when {
+                    isTrekDiscussed ->
+                        "Following up on our trekking discussion: Permit fees are approx रु 3,000 NPR for ACAP/Sagarmatha and रु 2,000 for the TIMS card. Daily teahouse costs range between रु 2,500 – 4,000 NPR per day including 3 meals and lodging."
+                    isFoodDiscussed ->
+                        "Speaking of local food prices: A steaming plate of Buff or Chicken Momos in Kathmandu typically costs रु 150 – 280 NPR depending on whether you visit a local eatery or a restaurant in Thamel/Jhamsikhel!"
+                    isPayDiscussed ->
+                        "ConnectNP Pay transactions have zero fees (रु 0 fee) for peer-to-peer transfers! Bank transfers through ConnectIPS Direct cost minimal standard clearing charges (रु 2-8 NPR)."
+                    else ->
+                        "Could you specify what item or service you'd like pricing information for? I can help with travel costs, local dining, or marketplace rates across Nepal!"
+                }
+            }
+
+            // Contextual location inquiries
+            lowerPrompt.contains("where") || lowerPrompt.contains("location") || lowerPrompt.contains("कहाँ") || lowerPrompt.contains("place") -> {
+                when {
+                    isTrekDiscussed ->
+                        "For the trek we discussed, start in Pokhara for the Annapurna region, or take a scenic flight from Kathmandu/Ramechhap to Lukla for the Everest region. Local jeeps also connect Syabrubesi for Langtang!"
+                    isFoodDiscussed ->
+                        "For the best spots we talked about: Shandar Momo (Suraj Arcade, New Road) and Bota Momo are top local picks in Kathmandu! In Patan, try Honacha near Mangal Bazaar for traditional Newari spicy wo & momos."
+                    else ->
+                        "Nepal has incredible locations depending on what you seek: Kathmandu Valley for heritage and food, Pokhara for lakeside relaxation, and Chitwan for jungle safaris!"
+                }
+            }
+
+            // Contextual duration / season inquiries
+            lowerPrompt.contains("how long") || lowerPrompt.contains("days") || lowerPrompt.contains("when") || lowerPrompt.contains("season") || lowerPrompt.contains("कहिले") -> {
+                when {
+                    isTrekDiscussed ->
+                        "For Himalayan trekking, plan 12-14 days for Everest Base Camp, 10-14 days for the full Annapurna Circuit, or 5-7 days for the Langtang Valley trek. Peak seasons are Autumn (Oct-Nov) and Spring (Mar-May) with crystal clear mountain vistas!"
+                    else ->
+                        "For a standard Nepal discovery tour, 7 to 10 days lets you explore Kathmandu's UNESCO sites, enjoy Pokhara's sunrise from Sarangkot, and experience nature peacefully."
+                }
+            }
+
+            // Follow-up asking for more details / expansion
+            lowerPrompt.contains("more") || lowerPrompt.contains("what else") || lowerPrompt.contains("tell me more") || lowerPrompt.contains("अझै") || lowerPrompt.contains("details") -> {
+                val previousBotTurn = history.filter { !it.isFromMe }.lastOrNull()?.text
+                if (previousBotTurn != null) {
+                    val summarySnippet = previousBotTurn.take(45).replace("\n", " ")
+                    "Expanding on what we were discussing (\"$summarySnippet...\"): Remember to stay hydrated, carry local cash outside valley centers, and use ConnectNP Pay when transacting with verified community sellers! What other details would you like?"
+                } else {
+                    "I'd be glad to share more! You can ask me about Nepal travel itineraries, popular food spots, ConnectNP features, or help with Nepali translation."
+                }
+            }
+
+            // Direct Trekking inquiry
+            lowerPrompt.contains("trek") || lowerPrompt.contains("himalaya") || lowerPrompt.contains("everest") || lowerPrompt.contains("annapurna") || lowerPrompt.contains("langtang") ->
+                "🏔️ Nepal Trekking Highlights: Annapurna Base Camp, Everest Base Camp, and Langtang Valley are the crown jewels. Let me know your preferred difficulty level and trip duration, and I'll build a custom itinerary for you!"
+
+            // Direct Food inquiry
+            lowerPrompt.contains("momo") || lowerPrompt.contains("food") || lowerPrompt.contains("eat") || lowerPrompt.contains("khana") ->
+                "🥟 Nepali Culinary Guide: Traditional Dal Bhat provides 24-hour power! For Momos, steamed C-Momo (chilli), Jhol Momo (with sesame gravy), and Kothey (pan-fried) are essential tastes. Would you like restaurant recommendations?"
+
+            // Direct Wallet inquiry
+            lowerPrompt.contains("pay") || lowerPrompt.contains("wallet") || lowerPrompt.contains("esewa") || lowerPrompt.contains("khalti") ->
+                "💳 ConnectNP Pay Overview: Built for Nepal with zero-fee P2P payments, QR scanning, and integrated escrow for Marketplace deals. You can top up directly via eSewa or Khalti!"
+
+            // Nepali language & translation
+            isNepaliLangPrompt || lowerPrompt.contains("अनुवाद") ->
+                "नमस्ते! म तपाईंलाई नेपाली र अंग्रेजी दुवै भाषामा सहयोग गर्न सक्छु। तपाईंले चाहेको कुनै पनि वाक्य सोध्नुहोस्, म तुरुन्त अनुवाद र अर्थ बताउनेछु। 🇳🇵"
+
+            // Greetings
+            isNepaliGreeting -> {
+                if (history.size > 2) {
+                    "नमस्ते! Welcome back to our conversation. What else would you like to explore next about Nepal or ConnectNP?"
+                } else {
+                    "नमस्ते (Namaste)! I'm your ConnectNP AI Assistant powered by Google Gemini. How can I assist you with your travels, community questions, or ConnectNP services today? 🇳🇵✨"
+                }
+            }
+
+            // General multi-turn contextual response
+            else -> {
+                val previousUserMsgs = history.filter { it.isFromMe }
+                if (previousUserMsgs.size > 1) {
+                    val lastTopic = previousUserMsgs[previousUserMsgs.size - 2].text.take(30)
+                    "Understood! Following up on \"$lastTopic\" and regarding \"$newPrompt\": I'm keeping our conversation in mind. Let me know if you need specific guides, recommendations, or step-by-step assistance!"
+                } else {
+                    "I'm here to help! You can ask me questions about Himalayan treks, local food guides in Nepal, using ConnectNP Pay, or navigating the community. What would you like to know?"
+                }
+            }
+        }
+    }
+}
